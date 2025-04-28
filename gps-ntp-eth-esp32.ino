@@ -71,8 +71,8 @@ String ip = "";  // we use DHCP
  */
 // GPS
 #define GPS_BAUDRATE 9600
-#define GPS_PPS_PIN 17  // If your GPS doesn't have a PPS output, just comment out this line.
-#define GPS_RX_PIN 18   //16
+// #define GPS_PPS_PIN 17  // If your GPS doesn't have a PPS output, just comment out this line.
+#define GPS_RX_PIN 18  //16
 #define GPS_TX_PIN 16
 //#define GPS_EN_PIN 12 // If your GPS doesn't have a EN input
 
@@ -86,7 +86,8 @@ String ip = "";  // we use DHCP
  */
 #define TIMING_OFFSET_US 0001
 
-#define DEBUG_PRINTLN Serial.printf("Got to: " __FILE__ ": %d\n", __LINE__)
+// #define DEBUG_PRINTLN Serial.printf("Got to: " __FILE__ ": %d\n", __LINE__)
+#define DEBUG_PRINTLN
 
 /*
  * Library-provided high-level objects
@@ -272,8 +273,13 @@ void loop() {
   IPAddress remoteIP;  // this will store the remote hosts's IP address
   int remotePort;      // the port it was sent from
   DEBUG_PRINTLN;
-  int packetSize = 0;  //Udp.parsePacket();  // this is what's failing
+  int packetSize = Udp.parsePacket();  // this is what's failing
   DEBUG_PRINTLN;
+#ifdef DEBUG
+  if (packetSize > 0) {
+    Serial.print("\n[NET] UDP Packet received - ");
+  }
+#endif
 
   if (packetSize && !sysStatus.event.notPPS && !sysStatus.event.notSatellite && can_respond_to_packets)  // we've got a packet, and there is GPS fix, and we have received new GPS data since the last NTP reply
   {
