@@ -14,6 +14,7 @@
 #include "minmea.h"
 #include "DateTime.h"
 #include "arduino_secrets.h"  // contains ssid & pass if STA mode
+#include "GpsInflux.h"
 
 // ======== Configuration ========
 #define DEBUG
@@ -122,7 +123,12 @@ void setup() {
 
 // ======== Main Loop ========
 void loop() {
-  handleGPS();
+  String data = Serial2.readStringUntil('\n');
+  handleGPS(data);
+  gpsInfluxFeed(data);
+
+  // 2) Post to Influx if interval elapsed
+  gpsInfluxUpdate();
   if (sysStatus.bits.newIP)
     updateIp();
   handleDisplayUpdate();
@@ -174,9 +180,8 @@ void initDisplayTimer() {
 
 // ======== Handlers ========
 
-void handleGPS() {
-  if (!Serial2.available()) return;
-  gpsBuffer = Serial2.readStringUntil('\n');
+void handleGPS(String gpsData) {
+  gpsBuffer = gpsData;
   gpsBuffer.toCharArray(gpsSentence, gpsBuffer.length() + 1);
   parseGpsSentence();
   gpsBuffer.clear();
