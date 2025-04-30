@@ -1,7 +1,7 @@
 /*
- * GPS NTP Server for ESP32 with Fallback to internal clock
+ * GPS NTP Server for ESP32
  * Uses hardware UART to read GPS, parse time, and serve NTP
- * When no GPS fix, serves estimated time since last fix (microCRTs) and sets LI=3
+ * Only responds when valid GPS fix is available
  */
 
 #include <Wire.h>
@@ -13,13 +13,13 @@
 #include <SPI.h>
 #include "minmea.h"
 #include "DateTime.h"
-#include "arduino_secrets.h"  // contains ssid & pass if STA mode
+#include "arduino_secrets.h"
 #include "GpsInflux.h"
 
 // ======== Configuration ========
 #define DEBUG
 
-// Wi-Fi/Ethernet mode: choose one
+// Network mode
 #define MODE_STA
 // #define MODE_AP
 // #define MODE_ETH
@@ -43,14 +43,14 @@ static const char AP_PASS[] = "NTP";
 #define ETH_TYPE ETH_PHY_LAN8720
 #endif
 
-// GPS / UART
+// GPS Configuration
 #define GPS_BAUDRATE 9600
 #define GPS_RX_PIN 18
 #define GPS_TX_PIN 16
 #define GPS_PPS_PIN 17
 #define TIMING_OFFSET_US 1u
 
-// NTP
+// NTP Server
 #define NTP_PORT 123
 #define NTP_PACKET_SIZE 48
 
@@ -60,21 +60,18 @@ Ticker displayTimer;
 String ipAddr;
 uint8_t packetBuffer[NTP_PACKET_SIZE];
 
-// Status flags
+// System Status
 union SystemStatus {
   uint8_t all;
   struct {
-    uint8_t noSatellite : 1;
-    uint8_t noPPS : 1;
     uint8_t newIP : 1;
-    uint8_t reserved : 5;
+    uint8_t reserved : 7;
   } bits;
 } sysStatus;
 
-// Fallback indicator
-bool usingFallback = false;
+bool displayUpdateFlag;
 
-// GPS parsing
+// GPS Data
 String gpsBuffer;
 char gpsSentence[MINMEA_MAX_LENGTH];
 struct minmea_sentence_rmc rmcFrame;
@@ -84,19 +81,17 @@ struct minmea_sentence_gga ggaFrame;
 DateTime referenceTime;
 unsigned long lastPpsMicros = 0;
 unsigned long microOffset = TIMING_OFFSET_US;
+DateTime gpsTime;  // Valid only when GPS fix exists
 
-// Display update flag
-volatile bool displayUpdateFlag = false;
-
-// NTP timestamps
-DateTime rxTime, txTime, gpsTime;
+// NTP Transaction
+DateTime rxTime, txTime;
 byte clientOrigTs[8];
 
-// Forward declarations
+// Forward Declarations
 void initNetworking();
 void initGPS();
 void initDisplayTimer();
-void handleGPS();
+void handleGPS(String gpsData);
 void handleDisplayUpdate();
 void handleNTP();
 void parseGpsSentence();
@@ -126,17 +121,16 @@ void loop() {
   String data = Serial2.readStringUntil('\n');
   handleGPS(data);
   gpsInfluxFeed(data);
-
-  // 2) Post to Influx if interval elapsed
   gpsInfluxUpdate();
+
   if (sysStatus.bits.newIP)
     updateIp();
+
   handleDisplayUpdate();
   handleNTP();
 }
 
 // ======== Initialization ========
-
 void initNetworking() {
 #ifdef MODE_STA
   WiFi.mode(WIFI_STA);
@@ -168,7 +162,9 @@ void initGPS() {
   attachInterrupt(
     digitalPinToInterrupt(GPS_PPS_PIN), []() {
       lastPpsMicros = micros();
-      referenceTime = DateTime(gpsTime.ntptime() + 1, microOffset);
+      if (gpsTime.isValid()) {
+        referenceTime = DateTime(gpsTime.ntptime() + 1, microOffset);
+      }
     },
     FALLING);
 #endif
@@ -179,7 +175,6 @@ void initDisplayTimer() {
 }
 
 // ======== Handlers ========
-
 void handleGPS(String gpsData) {
   gpsBuffer = gpsData;
   gpsBuffer.toCharArray(gpsSentence, gpsBuffer.length() + 1);
@@ -189,25 +184,18 @@ void handleGPS(String gpsData) {
 
 void handleDisplayUpdate() {
   if (!displayUpdateFlag) return;
-  // TODO: update TFT or Serial output
   displayUpdateFlag = false;
 }
 
 void handleNTP() {
   int packetSize = Udp.parsePacket();
-  if (packetSize == 0) return;
-
-  // Decide fallback or normal
-  if (sysStatus.bits.noSatellite || sysStatus.bits.noPPS) {
-    usingFallback = true;
+  if (packetSize == 0 || !gpsTime.isValid()) {
 #ifdef DEBUG
-    Serial.println("Fallback mode: serving internal clock estimate");
+    if (packetSize > 0) Serial.println("Ignoring request - no GPS fix");
 #endif
-  } else {
-    usingFallback = false;
+    return;
   }
 
-  // Read client request
   Udp.read(packetBuffer, packetSize);
   memcpy(clientOrigTs, packetBuffer + 40, 8);
 
@@ -219,15 +207,11 @@ void handleNTP() {
 }
 
 // ======== GPS Parsing ========
-
 void parseGpsSentence() {
   switch (minmea_sentence_id(gpsSentence, true)) {
     case MINMEA_SENTENCE_RMC:
       if (minmea_parse_rmc(&rmcFrame, gpsSentence)) {
-        sysStatus.bits.noSatellite = false;
-        if (rmcFrame.date.year < 0) {
-          sysStatus.bits.noSatellite = true;
-        } else {
+        if (rmcFrame.valid && rmcFrame.date.year >= 2023) {
           gpsTime = DateTime(rmcFrame.date.year,
                              rmcFrame.date.month,
                              rmcFrame.date.day,
@@ -236,17 +220,11 @@ void parseGpsSentence() {
                              rmcFrame.time.seconds,
                              microOffset);
         }
-#ifndef GPS_PPS_PIN
-        lastPpsMicros = micros();
-        referenceTime = DateTime(gpsTime.ntptime(), microOffset);
-#endif
       }
       break;
 
     case MINMEA_SENTENCE_GGA:
-      if (minmea_parse_gga(&ggaFrame, gpsSentence)) {
-        // satellites tracked (could set debug counts)
-      }
+      minmea_parse_gga(&ggaFrame, gpsSentence);
       break;
 
     default:
@@ -255,13 +233,10 @@ void parseGpsSentence() {
 }
 
 // ======== Time Utilities ========
-
 DateTime getCurrentTime() {
   unsigned long nowMicros = micros();
   unsigned long deltaUs = (nowMicros - lastPpsMicros) + microOffset;
-  // Only declare PPS lost if really long gap (e.g., >5s)
-  sysStatus.bits.noPPS = (deltaUs > 5000000);
-  return DateTime(referenceTime.ntptime(), deltaUs);
+  return DateTime(gpsTime.ntptime(), deltaUs);
 }
 
 uint64_t toNtp64(const DateTime& dt) {
@@ -271,59 +246,45 @@ uint64_t toNtp64(const DateTime& dt) {
 }
 
 void sendNtpReply(const IPAddress& remoteIP, uint16_t port) {
-  // NTP header configuration
-  // LI (2 bits): 11 = unsynchronized (fallback), 00 = synchronized (GPS)
-  // Version (3 bits): NTP v4 (100)
-  // Mode (3 bits): Server mode (100)
-  packetBuffer[0] = usingFallback ? 0xDC : 0x1C;
-  packetBuffer[1] = 1;     // Stratum: 1 = primary server (when using GPS)
+  // NTP Header
+  packetBuffer[0] = 0x1C;  // LI=00, Version=4, Mode=4
+  packetBuffer[1] = 1;     // Stratum 1
   packetBuffer[2] = 2;     // Poll interval
-  packetBuffer[3] = 0xF6;  // Precision (~15 us)
+  packetBuffer[3] = 0xF6;  // Precision
 
-  // Root delay and dispersion (unused in basic implementation)
-  memset(packetBuffer + 4, 0, 8);
+  memset(packetBuffer + 4, 0, 8);  // Root delay/dispersion
 
-  // Reference Identifier: ASCII "GPS" for GPS source
+  // Reference ID
   packetBuffer[12] = 'G';
   packetBuffer[13] = 'P';
   packetBuffer[14] = 'S';
   packetBuffer[15] = 0;
 
-  /* === Critical NTP Timestamps === */
-
-  // Reference Timestamp (Offset 16-23)
-  // Time when server's clock was last set/corrected
-  // Either GPS time (PPS sync) or fallback internal clock
-  uint64_t refTs = toNtp64(getCurrentTime());
+  // Reference Timestamp (GPS time)
+  uint64_t refTs = toNtp64(gpsTime);
   for (int i = 0; i < 8; ++i)
     packetBuffer[16 + i] = (refTs >> (56 - 8 * i)) & 0xFF;
 
-  // Originate Timestamp (Offset 24-31)
-  // Client's request transmission time (copied from client packet)
+  // Originate Timestamp
   memcpy(packetBuffer + 24, clientOrigTs, 8);
 
-  // Receive Timestamp (Offset 32-39)
-  // Server's time when request was received
+  // Receive Timestamp
   uint64_t rxTs = toNtp64(rxTime);
   for (int i = 0; i < 8; ++i)
     packetBuffer[32 + i] = (rxTs >> (56 - 8 * i)) & 0xFF;
 
-  // Transmit Timestamp (Offset 40-47)
-  // Server's time when response is sent
+  // Transmit Timestamp
   txTime = getCurrentTime();
   uint64_t txTs = toNtp64(txTime);
   for (int i = 0; i < 8; ++i)
     packetBuffer[40 + i] = (txTs >> (56 - 8 * i)) & 0xFF;
 
-  // Send completed NTP packet
   Udp.beginPacket(remoteIP, port);
   Udp.write(packetBuffer, NTP_PACKET_SIZE);
   Udp.endPacket();
 }
 
-
 // ======== Helpers ========
-
 void updateIp() {
 #ifdef MODE_STA
   ipAddr = WiFi.localIP().toString();

@@ -25,6 +25,17 @@ class DateTime {
   unsigned long microsfraction() const { return microsfraction_; }
   //uint16_t dayOfWeek(); //const;// { return dayOfWeek_;}
 
+
+  bool isValid() const {
+      // Basic sanity checks
+      return year_ >= 2023 && 
+              month_ >= 1 && month_ <= 12 &&
+              day_ >= 1 && day_ <= 31 &&
+              hour_ <= 23 &&
+              minute_ <= 59 &&
+              second_ <= 60;  // Allow for leap seconds
+  }
+
   // 32-bit times as seconds since 1/1/2000
   long secondstime() const;
   // 32-bit times as seconds since 1/1/1900
