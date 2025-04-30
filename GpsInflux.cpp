@@ -17,6 +17,8 @@ void gpsInfluxFeed(String s) {
     gps.encode(s.charAt(i));
   }
   writeCache += (s + "\n");
+  // Serial.print("fed string: ");
+  // Serial.println(s);
 }
 
 void gpsInfluxUpdate() {
