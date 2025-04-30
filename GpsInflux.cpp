@@ -10,18 +10,13 @@ static TinyGPSPlus gps;
 static TinyGPSCustom satsInView(gps, "GPGSV", 3);
 static unsigned long lastPost = 0;
 
-void gpsInfluxBegin() {
-  // Nothing to do here; Serial2 init happens in main setup
-}
-
-void gpsInfluxFeed(uint8_t c) {
-  gps.encode(c);
-}
+String writeCache;
 
 void gpsInfluxFeed(String s) {
   for (int i = 0; i < s.length(); i++) {
     gps.encode(s.charAt(i));
   }
+  writeCache += (s + "\n");
 }
 
 void gpsInfluxUpdate() {
@@ -37,7 +32,8 @@ void gpsInfluxUpdate() {
   String line = String("gps_metrics")
                 + " satellites=" + sats
                 + ",visible=" + visible
-                + ",fix=" + (fixOk ? "1" : "0");
+                + ",raw=\"" + writeCache
+                + "\",fix=" + (fixOk ? "1" : "0");
 
   String url = String(INFLUX_URL)
                + "/api/v2/write?org=" + INFLUX_ORG
@@ -59,5 +55,6 @@ void gpsInfluxUpdate() {
     Serial.print("Post failed: ");
     Serial.println(http.errorToString(code));
   }
+  writeCache = "";
   http.end();
 }

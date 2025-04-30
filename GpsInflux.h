@@ -16,11 +16,6 @@ extern const int GPS_RX_PIN;
 extern const int GPS_TX_PIN;
 extern const uint32_t GPS_BAUD;
 
-// Initialize module (no Serial.begin here)
-void gpsInfluxBegin();
-
-// Feed each incoming GPS byte (call from your single Serial2 read loop)
-void gpsInfluxFeed(uint8_t c);
 void gpsInfluxFeed(String c);
 
 
