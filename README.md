@@ -16,22 +16,10 @@ In this repository you will find a small project that implements the `NTP Server
 GPS <-> WT32-ETH01
 -----------------
 GND --> GND
-Tx  --> PIN35 (Rx)
-Rx  --> PIN17 (Tx)
-PPS --> PIN33 
+Tx  --> PIN16 (Rx)
+Rx  --> PIN18 (Tx)
+PPS --> PIN17 (not used) 
 VCC --> +5V
-
-TFT <-> WT32-ETH01
------------------
-GND  --> GND
-VCC  --> +5V
-BLK  --> +5V
-#MISO --> PIN36
-MOSI --> PIN15
-SCLK --> PIN14 
-DC   --> PIN4 
-CS   --> PIN12
-RST  --> PIN2
 ```
 
 ## Configuration 
